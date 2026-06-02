@@ -1,0 +1,55 @@
+# File: .github/workflows/cd.yaml
+name: CD — Update GitOps Manifests
+
+on:
+  workflow_run:
+    workflows: ["CI — Build & Test"]
+    branches: [main]
+    types: [completed]
+
+jobs:
+  update-gitops:
+    name: Update Image Tag in GitOps Repo
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Download image tag
+        uses: actions/download-artifact@v4
+        with:
+          name: image-tag
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Read image tag
+        id: tag
+        run: echo "IMAGE_TAG=$(cat image-tag.txt)" >> $GITHUB_OUTPUT
+
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v4
+        with:
+          repository: esarath/aks-poc-gitops
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+
+      - name: Update image tag in kustomization
+        run: |
+          cd gitops/environments/dev/app-poc
+          # Update the image tag
+          sed -i "s|esarathmails/aks-poc-web:.*|esarathmails/aks-poc-web:${{ steps.tag.outputs.IMAGE_TAG }}|g" \
+            kustomization.yaml
+          echo "Updated image to: esarathmails/aks-poc-web:${{ steps.tag.outputs.IMAGE_TAG }}"
+
+      - name: Commit and push GitOps change
+        run: |
+          cd gitops
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add environments/dev/app-poc/kustomization.yaml
+          git commit -m "chore: update web-app image to ${{ steps.tag.outputs.IMAGE_TAG }} [skip ci]" || echo "No changes to commit"
+          git push
+
+      - name: Notify Argo CD sync
+        run: |
+          echo "GitOps updated. Argo CD will auto-sync within 3 minutes."
+          echo "Manual sync: argocd app sync app-poc"
